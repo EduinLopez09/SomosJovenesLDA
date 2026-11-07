@@ -48,9 +48,10 @@ input:focus-visible,button:focus-visible{outline:3px solid #ffd23f;outline-offse
     </section>
 
     <section class="bg-white rounded-2xl p-4 overflow-x-auto">
-      <h2 class="font-semibold mb-3">Registros</h2>
-      <table class="w-full text-sm text-left">
-        <thead class="text-[#14173a]/60"><tr><th class="pb-2">Nombre</th><th>Correo</th><th>Teléfono</th><th>Estado</th><th>Confirmó</th></tr></thead>
+      <h2 class="font-semibold">Registros y asistencia</h2>
+      <p class="text-xs text-[#14173a]/60 mb-3">Verde: asistió. Rojo: faltó. Amarillo: hoy, aún sin escanear. Gris: antes de registrarse.</p>
+      <table class="w-full text-sm text-left whitespace-nowrap">
+        <thead id="thead" class="text-[#14173a]/60"></thead>
         <tbody id="rows"></tbody>
       </table>
       <p id="vacio" class="text-sm text-[#14173a]/60 py-6 text-center hidden">Aún no hay registros. Aparecerán aquí al instante.</p>
@@ -61,31 +62,86 @@ input:focus-visible,button:focus-visible{outline:3px solid #ffd23f;outline-offse
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const DIA_REUNION = 3;   // 0=domingo ... 3=miércoles ... 6=sábado
+const SEMANAS = 8;       // cuántas reuniones recientes se muestran
+const DIAS = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const registros = new Map();
+const asist = new Set();  // "registroId|yyyy-mm-dd"
 let canal = null, scanner = null, procesando = false, activo = false;
+
+/* ---------- Fechas de reunión ---------- */
+const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function reuniones() {                       // últimas SEMANAS fechas, de la más antigua a la más reciente
+  const d = new Date(); d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() - DIA_REUNION + 7) % 7));
+  const l = [];
+  for (let i = 0; i < SEMANAS; i++) { l.unshift(iso(d)); d.setDate(d.getDate() - 7); }
+  return l;
+}
 
 /* ---------- Tabla y contadores ---------- */
 function render() {
+  const hoy = iso(new Date()), fechas = reuniones();
   const l = [...registros.values()].sort((a, b) => b.creado_en.localeCompare(a.creado_en));
   const c = l.filter(r => r.estado === 'confirmado').length;
   $('total').textContent = l.length; $('conf').textContent = c; $('pend').textContent = l.length - c;
+  $('vacio').textContent = 'Aún no hay registros. Aparecerán aquí al instante.';
   $('vacio').classList.toggle('hidden', l.length > 0);
-  $('rows').innerHTML = l.map(r => `<tr class="border-t border-[#14173a]/10">
-    <td class="py-2 pr-3 font-semibold">${esc(r.nombre)}</td>
-    <td class="pr-3">${esc(r.email)}</td><td class="pr-3">${esc(r.telefono)}</td>
-    <td class="pr-3"><span class="px-2 py-0.5 rounded-full text-xs font-semibold ${r.estado === 'confirmado' ? 'bg-[#3a3fe0] text-white' : 'bg-[#ffd23f]'}">${esc(r.estado)}</span></td>
-    <td class="text-xs text-[#14173a]/60">${r.confirmado_en ? new Date(r.confirmado_en).toLocaleTimeString('es') : '—'}</td></tr>`).join('');
+  $('thead').innerHTML = `<tr><th class="pb-2 pr-3">Nombre</th><th class="pr-3">Correo</th><th class="pr-3">Teléfono</th><th class="pr-3">Estado</th><th class="pr-3">Confirmó</th>${
+    fechas.map(f => `<th class="pb-2 px-1 text-center font-semibold" title="${DIAS[DIA_REUNION]} ${f}">${f.slice(8)}/${f.slice(5, 7)}</th>`).join('')}</tr>`;
+  $('rows').innerHTML = l.map(r => {
+    const alta = iso(new Date(r.creado_en));
+    const celdas = fechas.map(f => {
+      let cls, sim;
+      if (asist.has(r.id + '|' + f)) { cls = 'bg-green-600 text-white'; sim = '✓'; }
+      else if (f < alta) { cls = 'bg-[#14173a]/10 text-[#14173a]/40'; sim = '–'; }
+      else if (f < hoy) { cls = 'bg-red-600 text-white'; sim = '✗'; }
+      else { cls = 'bg-[#ffd23f]'; sim = '•'; }
+      return `<td class="px-1 text-center"><span title="${f}" class="inline-flex w-7 h-7 items-center justify-center rounded-md text-xs font-bold ${cls}">${sim}</span></td>`;
+    }).join('');
+    return `<tr class="border-t border-[#14173a]/10">
+      <td class="py-2 pr-3 font-semibold">${esc(r.nombre)}</td>
+      <td class="pr-3">${esc(r.email)}</td><td class="pr-3">${esc(r.telefono)}</td>
+      <td class="pr-3"><span class="px-2 py-0.5 rounded-full text-xs font-semibold ${r.estado === 'confirmado' ? 'bg-[#3a3fe0] text-white' : 'bg-[#ffd23f]'}">${esc(r.estado)}</span></td>
+      <td class="pr-3 text-xs text-[#14173a]/60">${r.confirmado_en ? new Date(r.confirmado_en).toLocaleTimeString('es') : '—'}</td>${celdas}</tr>`;
+  }).join('');
 }
 
 /* ---------- Carga inicial + tiempo real ---------- */
+async function traer(tabla, cols, fn) {     // pagina de 1000 en 1000 (límite de Supabase)
+  let todo = [], desde = 0;
+  while (true) {
+    const { data, error } = await fn(sb.from(tabla).select(cols)).range(desde, desde + 999);
+    if (error) throw error;
+    todo = todo.concat(data);
+    if (data.length < 1000) return todo;
+    desde += 1000;
+  }
+}
+
 async function cargar() {
-  const { data, error } = await sb.from('registros').select('*');
-  if (error) return console.error(error);
-  registros.clear(); data.forEach(r => registros.set(r.id, r)); render();
+  try {
+    const desde = reuniones()[0];
+    const [regs, asis] = await Promise.all([
+      traer('registros', '*', q => q.order('id')),
+      traer('asistencias', 'registro_id,fecha', q => q.gte('fecha', desde).order('registro_id').order('fecha'))
+    ]);
+    registros.clear(); regs.forEach(r => registros.set(r.id, r));
+    asist.clear(); asis.forEach(a => asist.add(a.registro_id + '|' + a.fecha));
+    render();
+  } catch (e) {
+    console.error(e);
+    $('vacio').textContent = 'No se pudieron cargar los datos. Revisa que ejecutaste asistencias.sql en Supabase.';
+    $('vacio').classList.remove('hidden');
+    return;
+  }
   if (canal) sb.removeChannel(canal);
   canal = sb.channel('registros-rt')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'registros' },
       p => { if (p.new && p.new.id) { registros.set(p.new.id, p.new); render(); } })
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'asistencias' },
+      p => { asist.add(p.new.registro_id + '|' + p.new.fecha); render(); })
     .subscribe();
 }
 
@@ -99,14 +155,23 @@ function mostrar(msg, ok) {
 async function onScan(texto) {
   if (procesando) return;
   procesando = true; scanner.pause(true);               // evita lecturas duplicadas
-  const id = texto.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)?.[0];
-  let ok = false, nombre = '';
-  if (id) {
-    const { data } = await sb.from('registros').update({ estado: 'confirmado' })
-      .eq('id', id).eq('estado', 'pendiente').select('nombre');
-    ok = !!(data && data.length); nombre = ok ? data[0].nombre : '';
+  const id = texto.match(UUID)?.[0], ahora = new Date();
+  let ok = false, msg;
+  if (ahora.getDay() !== DIA_REUNION) {
+    msg = `✗ Hoy no es ${DIAS[DIA_REUNION]}: no se registra asistencia`;
+  } else if (!id) {
+    msg = '✗ QR no válido';
+  } else {
+    const fecha = iso(ahora), nombre = registros.get(id)?.nombre || 'Miembro';
+    const { error } = await sb.from('asistencias').insert({ registro_id: id, fecha });
+    if (!error) {
+      ok = true; msg = `✓ ${nombre}: asistencia registrada`;
+      asist.add(id + '|' + fecha); render();
+      await sb.from('registros').update({ estado: 'confirmado' }).eq('id', id).eq('estado', 'pendiente');
+    } else if (error.code === '23505') msg = `✗ ${nombre} ya fue escaneado hoy`;
+    else msg = '✗ QR no válido';
   }
-  mostrar(ok ? `✓ ${nombre} confirmado` : '✗ QR inválido o ya confirmado', ok);
+  mostrar(msg, ok);
   setTimeout(() => {                                    // reanuda solo tras 2 s
     $('fb').className = 'hidden';
     if (scanner) scanner.resume();
