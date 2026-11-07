@@ -50,6 +50,11 @@ input:focus-visible,button:focus-visible{outline:3px solid #ffd23f;outline-offse
     <section class="bg-white rounded-2xl p-4 overflow-x-auto">
       <h2 class="font-semibold">Registros y asistencia</h2>
       <p class="text-xs text-[#14173a]/60 mb-3">Verde: asistió. Rojo: faltó. Amarillo: hoy, aún sin escanear. Gris: antes de registrarse.</p>
+      <div class="flex items-center justify-between gap-2 mb-3">
+        <button id="prev" class="rounded-lg border border-[#14173a]/20 px-3 py-1.5 text-sm font-semibold hover:bg-[#14173a]/5 disabled:opacity-40 disabled:cursor-not-allowed">‹ Anteriores</button>
+        <span id="rango" class="text-sm font-semibold text-center"></span>
+        <button id="next" class="rounded-lg border border-[#14173a]/20 px-3 py-1.5 text-sm font-semibold hover:bg-[#14173a]/5 disabled:opacity-40 disabled:cursor-not-allowed">Siguientes ›</button>
+      </div>
       <table class="w-full text-sm text-left whitespace-nowrap">
         <thead id="thead" class="text-[#14173a]/60"></thead>
         <tbody id="rows"></tbody>
@@ -63,21 +68,29 @@ input:focus-visible,button:focus-visible{outline:3px solid #ffd23f;outline-offse
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const DIA_REUNION = 3;   // 0=domingo ... 3=miércoles ... 6=sábado
-const SEMANAS = 8;       // cuántas reuniones recientes se muestran
+const POR_PAGINA = 3;    // reuniones visibles a la vez
 const DIAS = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const registros = new Map();
 const asist = new Set();  // "registroId|yyyy-mm-dd"
+const cargadas = new Set(); // fechas cuya asistencia ya se descargó
+let pagina = 0;           // 0 = reuniones más recientes; 1 = las 3 anteriores; etc.
 let canal = null, scanner = null, procesando = false, activo = false;
 
 /* ---------- Fechas de reunión ---------- */
 const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-function reuniones() {                       // últimas SEMANAS fechas, de la más antigua a la más reciente
+const dmy = f => f.slice(8) + '/' + f.slice(5, 7) + '/' + f.slice(0, 4);
+function reuniones(n = pagina) {             // POR_PAGINA fechas, de la más antigua a la más reciente
   const d = new Date(); d.setHours(12, 0, 0, 0);
-  d.setDate(d.getDate() - ((d.getDay() - DIA_REUNION + 7) % 7));
+  d.setDate(d.getDate() - ((d.getDay() - DIA_REUNION + 7) % 7) - 7 * POR_PAGINA * n);
   const l = [];
-  for (let i = 0; i < SEMANAS; i++) { l.unshift(iso(d)); d.setDate(d.getDate() - 7); }
+  for (let i = 0; i < POR_PAGINA; i++) { l.unshift(iso(d)); d.setDate(d.getDate() - 7); }
   return l;
+}
+function desdeAlta(f) {                      // primera reunión en o después de la fecha f
+  const d = new Date(f + 'T12:00:00');
+  d.setDate(d.getDate() + ((DIA_REUNION - d.getDay() + 7) % 7));
+  return iso(d);
 }
 
 /* ---------- Tabla y contadores ---------- */
@@ -86,6 +99,10 @@ function render() {
   const l = [...registros.values()].sort((a, b) => b.creado_en.localeCompare(a.creado_en));
   const c = l.filter(r => r.estado === 'confirmado').length;
   $('total').textContent = l.length; $('conf').textContent = c; $('pend').textContent = l.length - c;
+  const primera = l.length ? iso(new Date(Math.min(...l.map(r => +new Date(r.creado_en))))) : hoy;
+  $('rango').textContent = dmy(fechas[0]) + ' a ' + dmy(fechas[fechas.length - 1]);
+  $('prev').disabled = !l.length || fechas[0] <= desdeAlta(primera);
+  $('next').disabled = pagina === 0;
   $('vacio').textContent = 'Aún no hay registros. Aparecerán aquí al instante.';
   $('vacio').classList.toggle('hidden', l.length > 0);
   $('thead').innerHTML = `<tr><th class="pb-2 pr-3">Nombre</th><th class="pr-3">Correo</th><th class="pr-3">Teléfono</th><th class="pr-3">Estado</th><th class="pr-3">Confirmó</th>${
@@ -120,15 +137,20 @@ async function traer(tabla, cols, fn) {     // pagina de 1000 en 1000 (límite d
   }
 }
 
+async function asegurar(fechas) {           // descarga solo las fechas que faltan
+  const faltan = fechas.filter(f => !cargadas.has(f));
+  if (!faltan.length) return;
+  const filas = await traer('asistencias', 'registro_id,fecha', q => q.in('fecha', faltan).order('registro_id').order('fecha'));
+  filas.forEach(a => asist.add(a.registro_id + '|' + a.fecha));
+  faltan.forEach(f => cargadas.add(f));
+}
+
 async function cargar() {
   try {
-    const desde = reuniones()[0];
-    const [regs, asis] = await Promise.all([
-      traer('registros', '*', q => q.order('id')),
-      traer('asistencias', 'registro_id,fecha', q => q.gte('fecha', desde).order('registro_id').order('fecha'))
-    ]);
+    const regs = await traer('registros', '*', q => q.order('id'));
     registros.clear(); regs.forEach(r => registros.set(r.id, r));
-    asist.clear(); asis.forEach(a => asist.add(a.registro_id + '|' + a.fecha));
+    asist.clear(); cargadas.clear();
+    await asegurar(reuniones());
     render();
   } catch (e) {
     console.error(e);
@@ -205,6 +227,13 @@ $('loginForm').onsubmit = async e => {
   $('loginErr').textContent = error ? 'Correo o contraseña incorrectos.' : '';
 };
 $('btnOut').onclick = () => sb.auth.signOut();
+async function ir(n) {
+  $('prev').disabled = $('next').disabled = true;
+  try { await asegurar(reuniones(n)); pagina = n; } catch (e) { console.error(e); }
+  render();
+}
+$('prev').onclick = () => ir(pagina + 1);
+$('next').onclick = () => ir(pagina - 1);
 $('btnCam').onclick = () => scanner ? detenerScanner() : iniciarScanner();
 
 sb.auth.onAuthStateChange((_evento, session) => {
@@ -212,7 +241,7 @@ sb.auth.onAuthStateChange((_evento, session) => {
   $('app').classList.toggle('hidden', !session);
   if (session && !activo) { activo = true; setTimeout(cargar, 0); }
   if (!session) {
-    activo = false; detenerScanner(); registros.clear();
+    activo = false; detenerScanner(); registros.clear(); asist.clear(); cargadas.clear(); pagina = 0;
     if (canal) { sb.removeChannel(canal); canal = null; }
   }
 });
