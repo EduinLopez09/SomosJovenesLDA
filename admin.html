@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin · Somos Jóvenes LDA</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;800&display=swap">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.0/dist/umd/supabase.min.js"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="supabase.js"></script>
+<style>
+body{font-family:'Sora',system-ui,sans-serif}
+input:focus-visible,button:focus-visible{outline:3px solid #ffd23f;outline-offset:2px}
+</style>
+</head>
+<body class="bg-[#eef1f8] text-[#14173a] min-h-screen">
+
+<main id="login" class="max-w-sm mx-auto p-6 pt-24 hidden">
+  <h1 class="text-2xl font-extrabold">Somos Jóvenes LDA</h1>
+  <p class="text-[#14173a]/70 mb-6">Acceso de administrador</p>
+  <form id="loginForm" class="space-y-3">
+    <input id="em" type="email" required autocomplete="username" placeholder="Correo" class="w-full rounded-xl bg-white px-4 py-3 border border-[#14173a]/15">
+    <input id="pw" type="password" required autocomplete="current-password" placeholder="Contraseña" class="w-full rounded-xl bg-white px-4 py-3 border border-[#14173a]/15">
+    <button class="w-full rounded-xl bg-[#3a3fe0] text-white font-semibold py-3 hover:bg-[#2b2fc4]">Entrar</button>
+    <p id="loginErr" role="alert" class="text-red-700 text-sm"></p>
+  </form>
+</main>
+
+<div id="app" class="max-w-6xl mx-auto p-4 sm:p-6 hidden">
+  <header class="flex items-center justify-between mb-5">
+    <h1 class="text-xl font-extrabold">Somos Jóvenes LDA · Panel</h1>
+    <button id="btnOut" class="text-sm font-semibold underline text-[#3a3fe0]">Cerrar sesión</button>
+  </header>
+
+  <section class="grid grid-cols-3 gap-3 mb-5 text-center">
+    <div class="bg-white rounded-2xl py-4"><p id="total" class="text-3xl font-extrabold">0</p><p class="text-sm text-[#14173a]/70">Registrados</p></div>
+    <div class="bg-[#3a3fe0] text-white rounded-2xl py-4"><p id="conf" class="text-3xl font-extrabold">0</p><p class="text-sm opacity-80">Confirmados</p></div>
+    <div class="bg-[#ffd23f] rounded-2xl py-4"><p id="pend" class="text-3xl font-extrabold">0</p><p class="text-sm">Pendientes</p></div>
+  </section>
+
+  <div class="grid lg:grid-cols-[340px_1fr] gap-5 items-start">
+    <section class="bg-white rounded-2xl p-4 space-y-3">
+      <h2 class="font-semibold">Escanear QR</h2>
+      <div id="reader" class="w-full overflow-hidden rounded-xl bg-[#14173a]/5 min-h-[120px]"></div>
+      <div id="fb" role="status" class="hidden rounded-xl p-3 text-center font-semibold"></div>
+      <button id="btnCam" class="w-full rounded-xl bg-[#3a3fe0] text-white font-semibold py-3 hover:bg-[#2b2fc4]">Activar cámara</button>
+    </section>
+
+    <section class="bg-white rounded-2xl p-4 overflow-x-auto">
+      <h2 class="font-semibold mb-3">Registros</h2>
+      <table class="w-full text-sm text-left">
+        <thead class="text-[#14173a]/60"><tr><th class="pb-2">Nombre</th><th>Correo</th><th>Teléfono</th><th>Estado</th><th>Confirmó</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p id="vacio" class="text-sm text-[#14173a]/60 py-6 text-center hidden">Aún no hay registros. Aparecerán aquí al instante.</p>
+    </section>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const registros = new Map();
+let canal = null, scanner = null, procesando = false, activo = false;
+
+/* ---------- Tabla y contadores ---------- */
+function render() {
+  const l = [...registros.values()].sort((a, b) => b.creado_en.localeCompare(a.creado_en));
+  const c = l.filter(r => r.estado === 'confirmado').length;
+  $('total').textContent = l.length; $('conf').textContent = c; $('pend').textContent = l.length - c;
+  $('vacio').classList.toggle('hidden', l.length > 0);
+  $('rows').innerHTML = l.map(r => `<tr class="border-t border-[#14173a]/10">
+    <td class="py-2 pr-3 font-semibold">${esc(r.nombre)}</td>
+    <td class="pr-3">${esc(r.email)}</td><td class="pr-3">${esc(r.telefono)}</td>
+    <td class="pr-3"><span class="px-2 py-0.5 rounded-full text-xs font-semibold ${r.estado === 'confirmado' ? 'bg-[#3a3fe0] text-white' : 'bg-[#ffd23f]'}">${esc(r.estado)}</span></td>
+    <td class="text-xs text-[#14173a]/60">${r.confirmado_en ? new Date(r.confirmado_en).toLocaleTimeString('es') : '—'}</td></tr>`).join('');
+}
+
+/* ---------- Carga inicial + tiempo real ---------- */
+async function cargar() {
+  const { data, error } = await sb.from('registros').select('*');
+  if (error) return console.error(error);
+  registros.clear(); data.forEach(r => registros.set(r.id, r)); render();
+  if (canal) sb.removeChannel(canal);
+  canal = sb.channel('registros-rt')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'registros' },
+      p => { if (p.new && p.new.id) { registros.set(p.new.id, p.new); render(); } })
+    .subscribe();
+}
+
+/* ---------- Escáner ---------- */
+function mostrar(msg, ok) {
+  const fb = $('fb');
+  fb.textContent = msg;
+  fb.className = 'rounded-xl p-3 text-center font-semibold ' + (ok ? 'bg-green-600 text-white' : 'bg-red-600 text-white');
+}
+
+async function onScan(texto) {
+  if (procesando) return;
+  procesando = true; scanner.pause(true);               // evita lecturas duplicadas
+  const id = texto.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)?.[0];
+  let ok = false, nombre = '';
+  if (id) {
+    const { data } = await sb.from('registros').update({ estado: 'confirmado' })
+      .eq('id', id).eq('estado', 'pendiente').select('nombre');
+    ok = !!(data && data.length); nombre = ok ? data[0].nombre : '';
+  }
+  mostrar(ok ? `✓ ${nombre} confirmado` : '✗ QR inválido o ya confirmado', ok);
+  setTimeout(() => {                                    // reanuda solo tras 2 s
+    $('fb').className = 'hidden';
+    if (scanner) scanner.resume();
+    procesando = false;
+  }, 2000);
+}
+
+async function iniciarScanner() {
+  if (scanner) return;
+  scanner = new Html5Qrcode('reader');
+  try {
+    await scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 250, height: 250 } }, onScan, () => {});
+    $('btnCam').textContent = 'Detener cámara';
+  } catch (e) {
+    scanner = null;
+    mostrar('No se pudo acceder a la cámara. Revisa los permisos del navegador.', false);
+  }
+}
+
+async function detenerScanner() {
+  if (!scanner) return;
+  try { await scanner.stop(); scanner.clear(); } catch (e) {}
+  scanner = null; procesando = false;
+  $('btnCam').textContent = 'Activar cámara';
+}
+
+/* ---------- Sesión ---------- */
+$('loginForm').onsubmit = async e => {
+  e.preventDefault();
+  const { error } = await sb.auth.signInWithPassword({ email: $('em').value, password: $('pw').value });
+  $('loginErr').textContent = error ? 'Correo o contraseña incorrectos.' : '';
+};
+$('btnOut').onclick = () => sb.auth.signOut();
+$('btnCam').onclick = () => scanner ? detenerScanner() : iniciarScanner();
+
+sb.auth.onAuthStateChange((_evento, session) => {
+  $('login').classList.toggle('hidden', !!session);
+  $('app').classList.toggle('hidden', !session);
+  if (session && !activo) { activo = true; setTimeout(cargar, 0); }
+  if (!session) {
+    activo = false; detenerScanner(); registros.clear();
+    if (canal) { sb.removeChannel(canal); canal = null; }
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Registro · Somos Jóvenes LDA</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;800&display=swap">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.0/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="supabase.js"></script>
+<style>
+body{font-family:'Sora',system-ui,sans-serif}
+.stub{border-top:2px dashed #c3c8ec}
+.notch{position:absolute;top:-14px;width:28px;height:28px;border-radius:50%;background:#eef1f8}
+input:focus-visible,button:focus-visible{outline:3px solid #ffd23f;outline-offset:2px}
+</style>
+</head>
+<body class="bg-[#eef1f8] text-[#14173a] min-h-screen flex items-center justify-center p-5">
+<main class="w-full max-w-sm">
+  <h1 class="text-3xl font-extrabold leading-tight mb-1">Somos Jóvenes LDA</h1>
+  <p class="text-[#14173a]/70 mb-6">Regístrate y recibe tu código QR de entrada.</p>
+
+  <form id="f" class="space-y-3">
+    <input id="nombre" required maxlength="120" autocomplete="name" placeholder="Nombre completo" class="w-full rounded-xl bg-white px-4 py-3 border border-[#14173a]/15">
+    <input id="email" type="email" required maxlength="160" autocomplete="email" placeholder="Correo electrónico" class="w-full rounded-xl bg-white px-4 py-3 border border-[#14173a]/15">
+    <input id="tel" type="tel" required maxlength="30" autocomplete="tel" placeholder="Teléfono" class="w-full rounded-xl bg-white px-4 py-3 border border-[#14173a]/15">
+    <button id="btn" class="w-full rounded-xl bg-[#3a3fe0] text-white font-semibold py-3 hover:bg-[#2b2fc4]">Siguiente</button>
+    <p id="err" role="alert" class="text-red-700 text-sm"></p>
+  </form>
+
+  <section id="ticket" class="hidden drop-shadow-xl">
+    <div class="bg-[#3a3fe0] text-white rounded-t-3xl p-6">
+      <p class="text-sm opacity-80">Tu entrada</p>
+      <p id="cNombre" class="text-2xl font-extrabold break-words"></p>
+    </div>
+    <div class="bg-white px-6 pb-6 pt-4 text-sm space-y-1">
+      <p id="cEmail" class="break-all"></p>
+      <p id="cTel"></p>
+      <span class="inline-block mt-2 px-3 py-1 rounded-full bg-[#ffd23f] font-semibold">Pendiente de confirmar</span>
+    </div>
+    <div class="relative stub bg-white rounded-b-3xl p-6 flex flex-col items-center">
+      <i class="notch -left-3.5"></i><i class="notch -right-3.5"></i>
+      <div id="qr" class="p-3 bg-white"></div>
+      <p class="text-xs text-center mt-3 text-[#14173a]/70">Muestra este código en la entrada. Se confirma al escanearlo.</p>
+      <button id="dl" class="mt-4 text-[#3a3fe0] font-semibold underline">Descargar QR</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+
+$('f').onsubmit = async e => {
+  e.preventDefault();
+  const btn = $('btn');
+  btn.disabled = true; btn.textContent = 'Registrando…'; $('err').textContent = '';
+  const v = { p_nombre: $('nombre').value.trim(), p_email: $('email').value.trim(), p_telefono: $('tel').value.trim() };
+
+  const { data: id, error } = await sb.rpc('registrar_usuario', v);
+  if (error || !id) {
+    $('err').textContent = 'No se pudo completar el registro. Revisa tus datos e inténtalo de nuevo.';
+    btn.disabled = false; btn.textContent = 'Siguiente';
+    return;
+  }
+
+  $('cNombre').textContent = v.p_nombre;
+  $('cEmail').textContent = v.p_email;
+  $('cTel').textContent = v.p_telefono;
+  $('qr').innerHTML = '';
+  // El QR contiene únicamente el UUID, sin datos personales
+  new QRCode($('qr'), { text: id, width: 200, height: 200, correctLevel: QRCode.CorrectLevel.H });
+
+  $('f').classList.add('hidden');
+  $('ticket').classList.remove('hidden');
+};
+
+$('dl').onclick = () => {
+  const c = $('qr').querySelector('canvas'), i = $('qr').querySelector('img');
+  const a = document.createElement('a');
+  a.href = c ? c.toDataURL('image/png') : i.src;
+  a.download = 'mi-qr-somos-jovenes.png';
+  a.click();
+};
+</script>
+</body>
+</html>
