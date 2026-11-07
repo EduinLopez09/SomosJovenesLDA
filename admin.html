@@ -69,6 +69,7 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const DIA_REUNION = 3;   // 0=domingo ... 3=miércoles ... 6=sábado
 const POR_PAGINA = 3;    // reuniones visibles a la vez
+const MAX_PAGINAS = 17;  // hasta ~1 año hacia atrás
 const DIAS = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const registros = new Map();
@@ -87,26 +88,19 @@ function reuniones(n = pagina) {             // POR_PAGINA fechas, de la más an
   for (let i = 0; i < POR_PAGINA; i++) { l.unshift(iso(d)); d.setDate(d.getDate() - 7); }
   return l;
 }
-function desdeAlta(f) {                      // primera reunión en o después de la fecha f
-  const d = new Date(f + 'T12:00:00');
-  d.setDate(d.getDate() + ((DIA_REUNION - d.getDay() + 7) % 7));
-  return iso(d);
-}
-
 /* ---------- Tabla y contadores ---------- */
 function render() {
   const hoy = iso(new Date()), fechas = reuniones();
   const l = [...registros.values()].sort((a, b) => b.creado_en.localeCompare(a.creado_en));
   const c = l.filter(r => r.estado === 'confirmado').length;
   $('total').textContent = l.length; $('conf').textContent = c; $('pend').textContent = l.length - c;
-  const primera = l.length ? iso(new Date(Math.min(...l.map(r => +new Date(r.creado_en))))) : hoy;
   $('rango').textContent = dmy(fechas[0]) + ' a ' + dmy(fechas[fechas.length - 1]);
-  $('prev').disabled = !l.length || fechas[0] <= desdeAlta(primera);
+  $('prev').disabled = pagina >= MAX_PAGINAS;
   $('next').disabled = pagina === 0;
   $('vacio').textContent = 'Aún no hay registros. Aparecerán aquí al instante.';
   $('vacio').classList.toggle('hidden', l.length > 0);
   $('thead').innerHTML = `<tr><th class="pb-2 pr-3">Nombre</th><th class="pr-3">Correo</th><th class="pr-3">Teléfono</th><th class="pr-3">Estado</th><th class="pr-3">Confirmó</th>${
-    fechas.map(f => `<th class="pb-2 px-1 text-center font-semibold" title="${DIAS[DIA_REUNION]} ${f}">${f.slice(8)}/${f.slice(5, 7)}</th>`).join('')}</tr>`;
+    fechas.map(f => `<th class="pb-2 px-1 text-center font-semibold" title="${DIAS[DIA_REUNION]} ${f}">${f.slice(8)}/${f.slice(5, 7)}</th>`).join('')}<th></th></tr>`;
   $('rows').innerHTML = l.map(r => {
     const alta = iso(new Date(r.creado_en));
     const celdas = fechas.map(f => {
@@ -121,7 +115,7 @@ function render() {
       <td class="py-2 pr-3 font-semibold">${esc(r.nombre)}</td>
       <td class="pr-3">${esc(r.email)}</td><td class="pr-3">${esc(r.telefono)}</td>
       <td class="pr-3"><span class="px-2 py-0.5 rounded-full text-xs font-semibold ${r.estado === 'confirmado' ? 'bg-[#3a3fe0] text-white' : 'bg-[#ffd23f]'}">${esc(r.estado)}</span></td>
-      <td class="pr-3 text-xs text-[#14173a]/60">${r.confirmado_en ? new Date(r.confirmado_en).toLocaleTimeString('es') : '—'}</td>${celdas}</tr>`;
+      <td class="pr-3 text-xs text-[#14173a]/60">${r.confirmado_en ? new Date(r.confirmado_en).toLocaleTimeString('es') : '—'}</td>${celdas}<td class="pl-2"><button data-del="${esc(r.id)}" class="px-2 py-1 rounded-md border border-red-300 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-40">Eliminar</button></td></tr>`;
   }).join('');
 }
 
@@ -161,7 +155,7 @@ async function cargar() {
   if (canal) sb.removeChannel(canal);
   canal = sb.channel('registros-rt')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'registros' },
-      p => { if (p.new && p.new.id) { registros.set(p.new.id, p.new); render(); } })
+      p => { if (p.eventType === 'DELETE') { if (p.old && p.old.id) registros.delete(p.old.id); } else if (p.new && p.new.id) registros.set(p.new.id, p.new); render(); })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'asistencias' },
       p => { asist.add(p.new.registro_id + '|' + p.new.fecha); render(); })
     .subscribe();
@@ -227,6 +221,18 @@ $('loginForm').onsubmit = async e => {
   $('loginErr').textContent = error ? 'Correo o contraseña incorrectos.' : '';
 };
 $('btnOut').onclick = () => sb.auth.signOut();
+$('rows').onclick = async e => {
+  const b = e.target.closest('[data-del]');
+  if (!b) return;
+  const id = b.dataset.del, r = registros.get(id);
+  if (!r || !confirm(`¿Eliminar a ${r.nombre}?\nSe borrarán también todas sus asistencias y no se puede deshacer.`)) return;
+  b.disabled = true;
+  const { data, error } = await sb.from('registros').delete().eq('id', id).select('id');
+  if (error || !data || !data.length) { b.disabled = false; alert('No se pudo eliminar. Revisa que ejecutaste eliminar.sql en Supabase.'); return; }
+  registros.delete(id);
+  for (const k of [...asist]) if (k.startsWith(id + '|')) asist.delete(k);
+  render();
+};
 async function ir(n) {
   $('prev').disabled = $('next').disabled = true;
   try { await asegurar(reuniones(n)); pagina = n; } catch (e) { console.error(e); }
